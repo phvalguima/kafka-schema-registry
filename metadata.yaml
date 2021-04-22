@@ -1,0 +1,9 @@
+# Copyright 2021 pguimaraes
+# See LICENSE file for licensing details.
+name: kafka-schema-registry
+description: |
+  TEMPLATE-TODO: fill out the charm's description
+summary: |
+  TEMPLATE-TODO: fill out the charm's summary
+series: [kubernetes]  # TEMPLATE-TODO: change to an Ubuntu series if not using k8s
+

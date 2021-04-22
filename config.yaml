@@ -1,0 +1,194 @@
+# Copyright 2021 pguimaraes
+# See LICENSE file for licensing details.
+options:
+  distro:
+    default: 'confluent'
+    type: string
+    description: |
+      Only two values possible: apache or confluent. Defines if will use apache kafka
+      or confluent distro to install kafka packages. Both distro and version
+      should be set.
+  install_method:
+    default: 'package'
+    type: string
+    description: |
+      There are two possible values: package or archive. If archive, it will upload the tarball set
+      in the resource of this charm. Archive method is EXPERIMENTAL for this charm.
+  cluster-count:
+    default: 3
+    type: int
+    description: |
+      The minimum amount of units to bootstrap the cluster
+  version:
+    default: '6.1'
+    type: string
+    description: |
+      Sets the kafka version for the given distro.
+  keystore-path:
+    default: '/var/ssl/private/zookeeper.keystore.jks'
+    type: string
+    description: |
+      Path to the keystore
+  truststore-path:
+    default: ''
+    type: string
+    description: |
+      Path to the truststore
+  listener-keystore-path:
+    default: ''
+    type: string
+    description: |
+      Path to the keystore for listener relation
+  listener-truststore-path:
+    default: ''
+    type: string
+    description: |
+      Path to the truststore for the listener relation
+  regenerate-keystore-truststore:
+    default: True
+    type: boolean
+    description: |
+      If set to True, force charm to regenerate trust and keystore for every charm changes.
+      Setting to False is still EXPERIMENTAL
+  client-auth:
+    default: False
+    type: boolean
+    description: |
+      Enables mutual authentication via TLS for clients.
+  rest_authentication_method:
+    default: "None"
+    type: string
+    description: |
+      As described on: https://docs.confluent.io/platform/current/schema-registry/security/index.html
+      Set to basic and set the roles on rest_authentication_role
+  rest_authentication_roles:
+    default: ""
+    type: string
+    description: |
+      As described on: https://docs.confluent.io/platform/current/schema-registry/security/index.html
+      If rest_authentication_method is set to other than None, this option can be used to populate available roles      
+  debug:
+    default: False
+    type: boolean
+    description: |
+      If set to true, enables debug on the units.
+  protocol:
+    default: "https"
+    type: string
+    description: |
+      Protocol type between http and https to be used between Schema Registry instances and its clients.
+  group-id:
+    default: "schema-registry"
+    type: string
+    description: |
+      Group ID for the schema registry cluster
+  resource-extension-class:
+    default: "io.confluent.kafka.schemaregistry.security.SchemaRegistrySecurityResourceExtension"
+    type: string
+    description: |
+      Resource extension class to be set on schema registry properties.
+  ssl_cert:
+    default: ''
+    type: string
+    description: |
+      Certificate + CA chain to be used in base64. Format to be converted should be:
+      -----BEGIN CERTIFICATE-----
+      <Primary cert in PEM format for your-domain>
+      -----END CERTIFICATE-----
+      -----BEGIN CERTIFICATE-----
+      <First intermediate CA certificate>
+      -----END CERTIFICATE-----
+      . . . . .
+      (there may be more than one intermediate cert)
+      . . . . .
+      -----BEGIN CERTIFICATE-----
+      <root-ca>
+      -----END CERTIFICATE-----
+      Pass the file with the certificate chain above as:
+      $ juju config <your-charm> ssl_cert="$(cat <crt file> | base64 -w0)"
+      Or in the bundle, using: include-base64://<path to crt file>
+  ssl_key:
+    default: ''
+    type: string
+    description: |
+      Key to be used in base64
+  ssl_listener_cert:
+    default: ''
+    type: string
+    description: |
+      Certificate for the listener relation.
+      Certificate with CA certificate chain to be used in base64
+      -----BEGIN CERTIFICATE-----
+      <Primary cert in PEM format for your-domain>
+      -----END CERTIFICATE-----
+      -----BEGIN CERTIFICATE-----
+      <First intermediate CA certificate>
+      -----END CERTIFICATE-----
+      . . . . .
+      (there may be more than one intermediate cert)
+      . . . . .
+      -----BEGIN CERTIFICATE-----
+      <root-ca>
+      -----END CERTIFICATE-----
+      Pass the file with the certificate chain above as:
+      $ juju config <your-charm> ssl_cert="$(cat <crt file> | base64 -w0)"
+      Or in the bundle, using: include-base64://<path to crt file>
+  ssl_listener_key:
+    default: ''
+    type: string
+    description: |
+      Key to be used in base64
+  user:
+    default: 'cp-schema-registry'
+    type: string
+    description: |
+      User set for kafka broker services
+  group:
+    default: 'confluent'
+    type: string
+    description: |
+      Group set for kafka broker services
+  clientPort:
+    type: int
+    default: 8081
+    description: |
+      Port to be used to listen for client connections.
+      If ssl_cert is specified or certificate relation enabled, then this port is
+      configured as secureClientPort instead
+  log4j-root-logger:
+    type: string
+    default: "INFO, stdout, file"
+    description: |
+      Set value for root logger on Schema Registry.
+  service-environment-overrides:
+    type: string
+    description: |
+      YAML formatted list of extra arguments to be added to [Environment] field of the service.
+      If Schema Registry secrets protection is enabled, set: CONFLUENT_SECURITY_MASTER_KEY to the masterkey.
+    default: |
+       SCHEMA_REGISTRY_HEAP_OPTS: "-Xms1g -Xmx1g -XX:MetaspaceSize=96m -XX:+UseG1GC -XX:MaxGCPauseMillis=20 -XX:InitiatingHeapOccupancyPercent=35 -XX:G1HeapRegionSize=16M -XX:MinMetaspaceFreeRatio=50 -XX:MaxMetaspaceFreeRatio=80"
+       KAFKA_LOG4J_OPTS: "-Dlog4j.configuration=file:/etc/kafka/zookeeper-log4j.properties"
+       LOG_DIR: "/var/log/schema-registry"
+  service-unit-overrides:
+    type: string
+    default: ''
+    description: |
+      YAML formatted list of extra arguments to be added to [Unit] field of the service
+  service-overrides:
+    type: string
+    description: |
+      YAML formatted list of extra arguments to be added to [Service] field of the service.
+      User, Group are overrided by the respective configs on the charm.
+    default: ''
+  schema-registry-properties:
+    type: string
+    description: |
+      Settings to be added to zookeeper.properties file.
+      YAML formatted list of items
+    default: ''
+  jmx-exporter-port:
+    type: int
+    default: 8079
+    description: |
+      Path to expose prometheus metrics for scraping.      
+    
