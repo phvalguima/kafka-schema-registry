@@ -1,0 +1,97 @@
+series: bionic
+variables:
+  version:  &version  "6.1"
+  distro:   &distro   "confluent"
+machines:
+  "0":
+    constraints: cores=2 mem=4G root-disk=20G
+  "1":
+    constraints: cores=2 mem=4G root-disk=20G
+  "2":
+    constraints: cores=2 mem=4G root-disk=20G
+  "3":
+    constraints: cores=2 mem=4G root-disk=20G
+  "4":
+    constraints: cores=2 mem=4G root-disk=20G
+  "5":
+    constraints: cores=2 mem=4G root-disk=20G
+applications:
+  easyrsa:
+    charm: cs:~containers/easyrsa
+    num_units: 1
+    to:
+    - lxd:0
+  kafka-broker:
+    charm: ../../kafka-broker-charm/kafka-broker.charm
+    num_units: 3
+    options:
+      user: test
+      group: test
+      replication-factor: 3
+      customize-failure-domain: False
+      generate-root-ca: False
+#      internal-cluster-domain: maas
+#      client-cluster-domain: maas
+#      broker-cluster-domain: maas
+      confluent_license_topic: ''
+      keystore-path: /var/ssl/private/kafka-ks.jks
+      truststore-path: /var/ssl/private/kafka-ts.jks
+      keystore-zookeeper-path: /var/ssl/private/zk-ks.jks
+      truststore-zookeeper-path: /var/ssl/private/zk-ts.jks
+      clientAuth: False
+#      log4j-root-logger: "DEBUG, stdout, kafkaAppender"
+    to:
+    - 3
+    - 4
+    - 5  
+  zookeeper:
+    charm: ../../zookeeper-charm/zookeeper.charm
+    num_units: 3
+    options:
+      version: *version
+      distro: *distro
+      user: test
+      group: test
+      quorum-keystore-path: /var/ssl/private/quorum-ks.jks
+      quorum-truststore-path: /var/ssl/private/quorum-ts.jks
+      keystore-path: /var/ssl/private/ssl-ks.jks
+      # Only charms related to this ZK will be able to connect
+      truststore-path: /var/ssl/private/ssl-ts.jks
+      generate-root-ca: false
+      sslQuorum: false
+      log4j-root-logger: "DEBUG, stdout, zkAppender"
+    to:
+    - 0
+    - 1
+    - 2
+  kafka-schema-registry:
+    charm: ../kafka-schema-registry.charm
+    num_units: 3
+    options:
+      user: test
+      group: test
+#      internal-cluster-domain: maas
+#      client-cluster-domain: maas
+#      broker-cluster-domain: maas
+      confluent_license_topic: ''
+      keystore-path: /var/ssl/private/kafka-ks.jks
+      truststore-path: /var/ssl/private/kafka-ts.jks
+      listener-keystore-path: /var/ssl/private/listener-ks.jks
+      listener-truststore-path: /var/ssl/private/listener-ts.jks
+      client-auth: False
+#      log4j-root-logger: "DEBUG, stdout, kafkaAppender"
+    to:
+    - lxd:3
+    - lxd:4
+    - lxd:5
+relations:
+- - kafka-broker
+  - zookeeper
+- - easyrsa
+  - kafka-broker
+- - easyrsa
+  - zookeeper
+- - kafka-broker:listeners
+  - kafka-schema-registry:listeners
+- - kafka-schema-registry
+  - easyrsa

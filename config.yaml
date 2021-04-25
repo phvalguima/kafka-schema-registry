@@ -14,6 +14,11 @@ options:
     description: |
       There are two possible values: package or archive. If archive, it will upload the tarball set
       in the resource of this charm. Archive method is EXPERIMENTAL for this charm.
+  confluent_license_topic:
+    default: "_confluent-license"
+    type: string
+    description: |
+      Topic used for storing Confluent license
   cluster-count:
     default: 3
     type: int
@@ -24,6 +29,26 @@ options:
     type: string
     description: |
       Sets the kafka version for the given distro.
+  schema_url:
+    default: ''
+    type: string
+    description: |
+      URL to be used as access-point to the schema-registry service.
+      Setting it as "https://" or "http://" will trigger use of SSL or not. Simple URLs
+      will default as "http://" only.
+  schema_converter:
+    default: "io.confluent.connect.avro.AvroConverter"
+    type: string
+    description: |
+      Check the list of available converters on:
+      https://docs.confluent.io/platform/current/connect/concepts.html#connect-converters
+      This option sets which schema converter type will be used on schema-registry
+  enhanced_avro_schema_support:
+    default: True
+    type: boolean
+    description: |
+      Set to true and Avro schema package information and Enums will be preserved when going from
+      Avro schema to Connect schema.
   keystore-path:
     default: '/var/ssl/private/zookeeper.keystore.jks'
     type: string
@@ -87,6 +112,12 @@ options:
     type: string
     description: |
       Resource extension class to be set on schema registry properties.
+  generate-root-ca:
+    default: False
+    type: boolean
+    description: |
+      If set, generate self-signed certificates to replace ssl* configs.
+      DEPRECATED: use certificates relation instead.
   ssl_cert:
     default: ''
     type: string

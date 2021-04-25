@@ -4,7 +4,6 @@
 
 import base64
 import logging
-import socket
 import yaml
 
 from ops.main import main
@@ -23,13 +22,10 @@ from charmhelpers.core.host import (
 )
 
 from wand.apps.relations.tls_certificates import (
-    TLSCertificateRequiresRelation,
-    TLSCertificateDataNotFoundInRelationError,
-    TLSCertificateRelationNotPresentError
+    TLSCertificateRequiresRelation
 )
 from wand.apps.kafka import KafkaJavaCharmBase
 from wand.apps.relations.kafka_mds import (
-    KafkaMDSRelation,
     KafkaMDSRequiresRelation
 )
 from wand.apps.relations.kafka_relation_base import (
@@ -37,18 +33,38 @@ from wand.apps.relations.kafka_relation_base import (
     KafkaRelationBaseTLSNotSetError
 )
 from wand.apps.relations.kafka_listener import (
-    KafkaListenerRelation,
     KafkaListenerRequiresRelation,
     KafkaListenerRelationNotSetError
+)
+from wand.apps.relations.kafka_schema_registry import (
+    KafkaSchemaRegistryProvidesRelation
 )
 from wand.security.ssl import PKCS12CreateKeystore
 from wand.security.ssl import genRandomPassword
 from wand.security.ssl import generateSelfSigned
+from wand.contrib.linux import get_hostname
 
 logger = logging.getLogger(__name__)
 
 
-class KafkaSchemaRegistryCharm(CharmBase):
+class SchemaRegistryCharmNotValidOptionSetError(Exception):
+
+    def __init__(self, option):
+        super().__init__("Option {} has no valid content".format(option))
+
+
+class SchemaRegistryCharmMissingRelationError(Exception):
+
+    def __init__(self, relation_name):
+        super().__init__("Missing relation to: {}".format(relation_name))
+
+
+class SchemaRegistryCharmUnsupportedParamError(Exception):
+
+    def __init__(self, message):
+        super().__init__(message)
+
+class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
 
     CONFLUENT_PACKAGES = [
         "confluent-common",
@@ -68,10 +84,10 @@ class KafkaSchemaRegistryCharm(CharmBase):
         self.framework.observe(self.on.install, self._on_install)
         self.framework.observe(self.on.config_changed,
                                self._on_config_changed)
-        self.framework.observe(self.on.listener_relation_joined,
-                               self.on_listener_relation_joined)
-        self.framework.observe(self.on.listener_relation_changed,
-                               self.on_listener_relation_changed)
+        self.framework.observe(self.on.listeners_relation_joined,
+                               self.on_listeners_relation_joined)
+        self.framework.observe(self.on.listeners_relation_changed,
+                               self.on_listeners_relation_changed)
         self.framework.observe(self.on.schemaregistry_relation_joined,
                                self.on_schemaregistry_relation_joined)
         self.framework.observe(self.on.schemaregistry_relation_changed,
@@ -80,6 +96,10 @@ class KafkaSchemaRegistryCharm(CharmBase):
                                self.on_mds_relation_joined)
         self.framework.observe(self.on.mds_relation_changed,
                                self.on_mds_relation_changed)
+        self.framework.observe(self.on.certificates_relation_joined,
+                               self.on_certificates_relation_joined)
+        self.framework.observe(self.on.certificates_relation_changed,
+                               self.on_certificates_relation_changed)
         self.framework.observe(self.on.update_status,
                                self._on_update_status)
         # Relation managers
@@ -88,12 +108,33 @@ class KafkaSchemaRegistryCharm(CharmBase):
         self.sr = KafkaSchemaRegistryProvidesRelation(self, "schemaregistry")
         self.certificates = \
             TLSCertificateRequiresRelation(self, 'certificates')
-        self.mds = MDSRequiresRelation(self, "mds")
+        self.mds = KafkaMDSRequiresRelation(self, "mds")
+        # States for the SSL part
+        self.get_ssl_methods_list = [
+            self.get_ssl_cert, self.get_ssl_key,
+            self.get_ssl_listener_cert, self.get_ssl_listener_key]
+        self.ks.set_default(ssl_cert="")
+        self.ks.set_default(ssl_key="")
+        self.ks.set_default(ssl_listener_cert="")
+        self.ks.set_default(ssl_listener_key="")
+        self.ks.set_default(ks_listener_pwd="")
+        self.ks.set_default(ts_listener_pwd="")
 
-    def on_listener_relation_joined(self, event):
-        # If no certificate available, defer this event and wait
-        if not self._cert_relation_set(event, self.listener):
+    def on_schemaregistry_relation_joined(self, event):
+        if not self._cert_relation_set(
+                event, self.sr,
+                extra_sans=self.config.get("schema_url", None)):
             return
+        self._on_config_changed(event)
+
+    def on_schemaregistry_relation_changed(self, event):
+        if not self._cert_relation_set(
+                event, self.sr,
+                extra_sans=self.config.get("schema_url", None)):
+            return
+        self._on_config_changed(event)
+
+    def _generate_listener_request(self):
         req = {}
         if self.is_sasl_enabled():
             # TODO: implement it
@@ -101,11 +142,17 @@ class KafkaSchemaRegistryCharm(CharmBase):
         req["is_public"] = False
         if self.is_ssl_enabled():
             req["cert"] = self.get_ssl_cert()
+        req["plaintext_pwd"] = genRandomPassword(24)
         self.listener.set_request(req)
+
+    def on_listeners_relation_joined(self, event):
+        # If no certificate available, defer this event and wait
+        if not self._cert_relation_set(event, self.listener):
+            return
         self._on_config_changed(event)
 
-    def on_listener_relation_changed(self, event):
-        self.on_listener_relation_joined(event)
+    def on_listeners_relation_changed(self, event):
+        self.on_listeners_relation_joined(event)
 
     def on_certificates_relation_joined(self, event):
         self.certificates.on_tls_certificate_relation_joined(event)
@@ -141,9 +188,6 @@ class KafkaSchemaRegistryCharm(CharmBase):
             return False
         return False
 
-    def is_ssl_enabled(self):
-        return len(self.get_ssl_cert()) > 0 and len(self.get_ssl_key()) > 0
-
     def _on_install(self, event):
         super()._on_install(event)
         self.model.unit.status = MaintenanceStatus("Starting installation")
@@ -158,37 +202,11 @@ class KafkaSchemaRegistryCharm(CharmBase):
         super().install_packages('openjdk-11-headless', packages)
 
     def _check_if_ready_to_start(self):
-        if not self.cluster.is_ready:
-            self.model.unit.status = \
-                BlockedStatus("Waiting for other cluster units")
-            return False
         self.model.unit.status = \
             ActiveStatus("{} running".format(self.service))
         return True
 
-    def get_ssl_cert(self):
-        if self.config["generate-root-ca"]:
-            return self.ks.ssl_cert
-        if len(self.config.get("ssl_cert")) > 0 and \
-           len(self.config.get("ssl_key")) > 0:
-            return base64.b64decode(self.config["ssl_cert"]).decode("ascii")
-        certs = self.certificates.get_server_certs()
-        c = certs[self.sr.binding_addr]["cert"] + \
-            self.certificates.get_chain()
-        logger.debug("SSL Certificate chain"
-                     " from tls-certificates: {}".format(c))
-        return c
-
-    def get_ssl_key(self):
-        if self.config["generate-root-ca"]:
-            return self.ks.ssl_key
-        if len(self.config.get("ssl_cert")) > 0 and \
-           len(self.config.get("ssl_key")) > 0:
-            return base64.b64decode(self.config["ssl_key"]).decode("ascii")
-        certs = self.certificates.get_server_certs()
-        k = certs[self.sr.binding_addr]["key"]
-        return k
-
+    # STORE GET METHODS
     def get_ssl_keystore(self):
         path = self.config.get("keystore-path", "")
         return path
@@ -197,83 +215,90 @@ class KafkaSchemaRegistryCharm(CharmBase):
         path = self.config.get("truststore-path", "")
         return path
 
-    def get_ssl_listener_cert(self):
-        if self.config["generate-root-ca"]:
-            return self.ks.ssl_cert
-        if len(self.config.get("ssl_listener_cert")) > 0 and \
-           len(self.config.get("ssl_listener_key")) > 0:
-            return base64.b64decode(self.config["ssl_listener_cert"]).decode("ascii")
-        certs = self.certificates.get_server_certs()
-        c = certs[self.listener.binding_addr]["cert"] + \
-            self.certificates.get_chain()
-        logger.debug("SSL Certificate chain"
-                     " from tls-certificates: {}".format(c))
-        return c
-
-    def get_ssl_listener_key(self):
-        if self.config["generate-root-ca"]:
-            return self.ks.ssl_key
-        if len(self.config.get("ssl_listener_cert")) > 0 and \
-           len(self.config.get("ssl_listener_key")) > 0:
-            return base64.b64decode(self.config["ssl_listener_key"]).decode("ascii")
-        certs = self.certificates.get_server_certs()
-        k = certs[self.listener.binding_addr]["key"]
-        return k
-
-    def get_ssl_keystore(self):
+    def get_ssl_listener_keystore(self):
         path = self.config.get("keystore-listener-path", "")
         return path
 
-    def get_ssl_truststore(self):
+    def get_ssl_listener_truststore(self):
         path = self.config.get("truststore-listener-path", "")
         return path
 
+    # SSL GET METHODS
+    def get_ssl_listener_cert(self):
+        return self._get_ssl(self.listener, "cert")
+
+    def get_ssl_listener_key(self):
+        return self._get_ssl(self.listener, "key")
+
+    def get_ssl_cert(self):
+        return self._get_ssl(self.sr, "cert")
+
+    def get_ssl_key(self):
+        return self._get_ssl(self.sr, "key")
+
+    def _get_ssl(self, relation, ty):
+        prefix = None
+        rel = None
+        if isinstance(relation, KafkaListenerRequiresRelation):
+            prefix = "ssl_listener"
+        elif isinstance(relation, KafkaSchemaRegistryProvidesRelation):
+            prefix = "ssl"
+        if len(self.config.get(prefix + "_cert")) > 0 and \
+           len(self.config.get(prefix + "_key")) > 0:
+                if ty == "cert":
+                    return base64.b64decode(
+                        self.config[prefix + "_cert"]).decode("ascii")
+                else:
+                    return base64.b64decode(
+                        self.config[prefix + "_key"]).decode("ascii")
+        
+        certs = self.certificates.get_server_certs()
+        c = certs[relation.binding_addr][ty]
+        if ty == "cert":
+            c = c + \
+                self.certificates.get_chain()
+        logger.debug("SSL {} for {}"
+                     " from tls-certificates: {}".format(ty, prefix, c))
+        return c
 
     def _generate_keystores(self):
-        if self.config["generate-root-ca"] and \
-            (len(self.ks.quorum_cert) > 0 and
-             len(self.ks.quorum_key) > 0 and
-             len(self.ks.ssl_cert) > 0 and
-             len(self.ks.ssl_key) > 0):
-            logger.info("Certificate already auto-generated and set")
-            return
-        if self.config["generate-root-ca"]:
-            logger.info("Certificate needs to be auto generated")
-            self.ks.ssl_cert, self.ks.ssl_key = \
-                generateSelfSigned(self.unit_folder,
-                                   certname="ssl-zookeeper-root-ca",
-                                   user=self.config["user"],
-                                   group=self.config["group"],
-                                   mode=0o600)
-            logger.info("Certificates and keys generated")
-        else:
-            # Check if the certificates remain the same
-            if self.ks.ssl_cert == self.get_ssl_cert() and \
-                    self.ks.quorum_key == self.get_quorum_key():
-                # Yes, they do, leave this method as there is nothing to do.
-                logger.info("Certificates and keys remain the same")
-                return
-            # Certs already set either as configs or certificates relation
-            self.ks.ssl_cert = self.get_ssl_cert()
-            self.ks.ssl_key = self.get_ssl_key()
-        if len(self.ks.ssl_cert) > 0 and \
-           len(self.ks.ssl_key) > 0:
-            logger.info("Create PKCS12 cert/key for zookeeper relation")
-            self.ks.ks_password = genRandomPassword()
-            filename = genRandomPassword(6)
-            PKCS12CreateKeystore(
-                self.get_ssl_keystore(),
-                self.ks.ks_password,
-                self.get_ssl_cert(),
-                self.get_ssl_key(),
-                user=self.config["user"],
-                group=self.config["group"],
-                mode=0o640,
-                openssl_chain_path="/tmp/" + filename + ".chain",
-                openssl_key_path="/tmp/" + filename + ".key",
-                openssl_p12_path="/tmp/" + filename + ".p12",
-                ks_regenerate=self.config.get(
-                                  "regenerate-keystore-truststore", False))
+        ks = [[self.ks.ssl_cert, self.ks.ssl_key, self.ks.ks_password,
+               self.get_ssl_cert, self.get_ssl_key, self.get_ssl_keystore],
+              [self.ks.ssl_listener_cert, self.ks.ssl_listener_key,
+               self.ks.ks_listener_pwd,
+               self.get_ssl_listener_cert, self.get_ssl_listener_key,
+               self.get_ssl_listener_keystore]]
+        # INDICES WITHIN THE LIST:
+        CERT, KEY, PWD, GET_CERT, GET_KEY, GET_KEYSTORE = 0,1,2,3,4,5
+        # Generate the keystores if cert/key exists
+        for t in ks:
+            if t[CERT] == t[GET_CERT]() and \
+               t[KEY] == t[KEY]():
+                # Certs and keys are the same
+                logger.info("Same certs and keys for {}".format(t[CERT]))
+                continue
+            t[CERT] = t[GET_CERT]()
+            t[KEY] = t[GET_KEY]()
+            if len(t[CERT]) > 0 and len(t[KEY]) > 0 and t[GET_KEYSTORE]():
+                logger.info("Create PKCS12 cert/key for {}".format(t[CERT]))
+                logger.debug("Iteration: {}".format(t))
+                t[PWD] = genRandomPassword()
+                filename = genRandomPassword(6)
+                PKCS12CreateKeystore(
+                    t[GET_KEYSTORE](),
+                    t[PWD],
+                    t[GET_CERT](),
+                    t[GET_KEY](),
+                    user=self.config["user"],
+                    group=self.config["group"],
+                    mode=0o640,
+                    openssl_chain_path="/tmp/" + filename + ".chain",
+                    openssl_key_path="/tmp/" + filename + ".key",
+                    openssl_p12_path="/tmp/" + filename + ".p12",
+                    ks_regenerate=self.config.get(
+                        "regenerate-keystore-truststore", False))
+            elif not t[GET_KEYSTORE]():
+                logger.debug("Keystore not found on Iteration: {}".format(t))
 
     def _get_service_name(self):
         if self.distro == 'confluent':
@@ -282,49 +307,53 @@ class KafkaSchemaRegistryCharm(CharmBase):
             self.service = "schema-registry"
         return self.service
 
-    def _render_schema_registry_properties(self):
+    def _render_schemaregistry_properties(self, event):
         logger.info("Start to render schema-registry properties")
         sr_props = \
             yaml.safe_load(self.config.get(
                 "schema-registry-properties", "")) or {}
+        if self.config.get("confluent_license_topic") and \
+           len(self.config.get("confluent_license_topic")) > 0:
+            sr_props["confluent.license.topic"] = self.config.get("confluent_license_topic")
+
         auth_method = self.config.get(
             "rest_authentication_method", "").lower()
+        # Manage authentication
         if auth_method == "none":
-            sr_props["authentication.method"] = "None"
+            sr_props["authentication.method"] = "NONE"
             sr_props["authentication.roles"] = "**"
         elif auth_method == "basic":
             sr_props["authentication.method"] = "BASIC"
             sr_props["authentication.roles"] = \
                 self.config.get("rest_authentication", "")
+            # TODO: Create this field on the jaas.conf file
             sr_props["authentication.realm"] = "SchemaRegistry-Props"
+        elif auth_method == "bearer":
+            # TODO: Set it correctly
+            pass
         else:
             logger.info("Authentication method {}"
                         " not implemented yet".format(auth_method))
             raise SchemaRegistryCharmNotValidOptionSetError(
                 self.config.get("rest_authentication_method"))
-        if self.mds.relations:
-            sr_props["confluent.metadata.bootstrap.server.urls"] = \
-                self.mds.get_server_list()
-            if self.mds.is_auth_set():
-                sr_props["confluent.metadata.basic.auth.user.info"] = \
-                    "{}:{}".format(
-                        self.mds.get_mds_user(),
-                        self.mds.get_mds_password())
-                if self.mds.is_auth_set():
-                    sr_props["confluent.metadata.http.auth.credentials"
-                             ".provider"] = self.mds.get_cred_provider()
-                    sr_props["confluent.schema.registry.auth"
-                             ".mechanism"] = self.mds.get_auth_mech()
-                    sr_props["confluent.schema.registry.authorizer"
-                             ".class"] = self.mds.get_authorizer()
+
+        # MDS Relation
+        if not self.mds.relation:
+            # MDS is only available for Confluent
+            logger.warning("MDS relation not detected")
+        elif self.mds.relation and self.distro != "confluent":
+            raise SchemaRegistryCharmUnsupportedParamError(
+                "kafka distro {} does not support MDS relation".format(self.distro)
+            )
         else:
-            self.model.unit.status = \
-                BlockedStatus("Missing MDS relation")
-            event.defer()
-            raise SchemaRegistryCharmMissingRelationError("mds"))
+            # MDS relation present
+            mds_opts = self.mds.get_options()
+            dist_props = {**dist_props, **mds_props}
 
         sr_props["debug"] = self.config.get("debug", False)
         sr_props["host.name"] = get_hostname(self.sr.advertise_addr)
+
+        # Listeners relation
         sr_props["inter.instance.protocol"] = self.config.get("protocol", "https").lower()
         sr_props["listeners"] = "{}://{}:{}".format(
             self.config.get("protocol", "https").lower(),
@@ -337,10 +366,12 @@ class KafkaSchemaRegistryCharm(CharmBase):
             sr_props["schema.registry.resource.extension.class"] = \
                 self.config.get("resource-extension-class", "")
             sr_props["rest.servlet.initializor.classes"] = \
-                "io.confluent.common.security.jetty.initializer"
-                ".InstallBearerOrBasicSecurityHandler"
+                "io.confluent.common.security.jetty.initializer" \
+                + ".InstallBearerOrBasicSecurityHandler"
             # TODO: Implement RBAC: public.key.path=/var/ssl/private/public.pem
-        if self.get_ssl_cert() and self.get_ssl_key():
+        # Check if schema_url starts with https. If yes, then set up ssl
+        if self.config.get("schema_url", "").startswith("https://") and \
+           self.is_ssl_enabled():
             sr_props["security.protocol"] = "SSL"
             sr_props["ssl.key.password"] = self.ks.ks_password
             sr_props["ssl.keystore.location"] = self.get_ssl_keystore()
@@ -360,25 +391,27 @@ class KafkaSchemaRegistryCharm(CharmBase):
         sr_props["kafkastore.bootstrap.servers"] = self.listener.get_bootstrap_servers()
         sr_props["kafkastore.topic"] = "_schemas"
         sr_props["kafkastore.topic.replication.factor"] = 3
-        if self.get_listener_cert() and \
-           self.get_listener_key():
+        if self.get_ssl_listener_cert() and \
+           self.get_ssl_listener_key():
             sr_props["kafkastore.security.protocol"] = "SSL"
             # unset listener-keystore if mutual TLS is disabled
-            if len(self.get_listener_keystore()) > 0:
+            if len(self.get_ssl_listener_keystore()) > 0:
                 sr_props["kafkastore.ssl.key.password"] = self.ks.ks_listener_pwd
-                sr_props["kafkastore.ssl.keystore.location"] = self.get_listener_keystore()
+                sr_props["kafkastore.ssl.keystore.location"] = self.get_ssl_listener_keystore()
                 sr_props["kafkastore.ssl.keystore.password"] = self.ks.ks_listener_pwd
             # unset if willing to use java default truststore instead
-            if len(self.get_listener_truststore()) > 0:
-                sr_props["kafkastore.ssl.truststore.location"] = self.get_listener_truststore()
+            if len(self.get_ssl_listener_truststore()) > 0:
+                sr_props["kafkastore.ssl.truststore.location"] = self.get_ssl_listener_truststore()
                 sr_props["kafkastore.ssl.truststore.password"] = self.ks.ts_listener_pwd
                 self.listener.set_TLS_auth(
-                    self.get_listner_cert(),
-                    self.get_listener_truststore(),
+                    self.get_ssl_listener_cert(),
+                    self.get_ssl_listener_truststore(),
                     self.ks.ts_listener_pwd,
                     user=self.config["user"],
                     group=self.config["group"],
                     mode=0o640)
+        else: # No SSL defined
+            sr_props["kafkastore.security.protocol"] = "PLAINTEXT"
 
 # kafkastore.sasl.jaas.config=org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule required username="schema_registry" password="password123" metadataServerUrls="https://ansiblebroker3.example.com:$
 # kafkastore.sasl.login.callback.handler.class=io.confluent.kafka.clients.plugins.auth.token.TokenUserLoginCallbackHandler
@@ -416,12 +449,31 @@ class KafkaSchemaRegistryCharm(CharmBase):
         logger.debug("Running _generate_keystores()")
         self._generate_keystores()
         self.model.unit.status = \
+            MaintenanceStatus("Generate Listener settings")
+        self._generate_listener_request()
+
+        self.model.unit.status = \
+            MaintenanceStatus("Setting schema registry parameters")
+        # Manage Schema Registry relation
+        self.sr.set_schema_url(self.config.get("schema_url", ""))
+        self.sr.set_converter(self.config.get("schema_converter", ""))
+        self.sr.set_enhanced_avro_support(
+            self.config.get("enhanced_avro_schema_support", ""))
+        self.model.unit.status = \
             MaintenanceStatus("Render schema-registry.properties")
-        logger.debug("Running render_schema_registry_properties()")
-        self._render_schema_registry_properties()
+        logger.debug("Running render_schemaregistry_properties()")
+        try:
+            self._render_schemaregistry_properties(event)
+        except SchemaRegistryCharmNotValidOptionSetError:
+            # Returning as we need to wait for a config change and that
+            # will trigger a new event
+            return
+        except SchemaRegistryCharmMissingRelationError:
+            # same reason as above, waiting for an add-relation
+            return
         self.model.unit.status = MaintenanceStatus("Render log4j properties")
         logger.debug("Running log4j properties renderer")
-        self._render_log4j_properties()
+        self._render_sr_log4j_properties()
         self.model.unit.status = \
             MaintenanceStatus("Render service override conf file")
         logger.debug("Render override.conf")

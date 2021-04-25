@@ -5,5 +5,22 @@ description: |
   TEMPLATE-TODO: fill out the charm's description
 summary: |
   TEMPLATE-TODO: fill out the charm's summary
-series: [kubernetes]  # TEMPLATE-TODO: change to an Ubuntu series if not using k8s
-
+series:
+  - bionic
+subordinate: false
+requires:
+  mds:
+    interface: mds
+  listeners:
+    interface: listeners
+  certificates:
+    interface: tls-certificates
+provides:
+  schemaregistry:
+    interface: schema-registry
+resources:                                                  
+  archive:                                                  
+    type: file                                              
+    filename: archive.tar.gz                                
+    description: |                                          
+      Tarball file used to install kafka instead of packages
