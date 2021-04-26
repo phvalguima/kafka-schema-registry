@@ -117,8 +117,9 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
         self.ks.set_default(ssl_key="")
         self.ks.set_default(ssl_listener_cert="")
         self.ks.set_default(ssl_listener_key="")
-        self.ks.set_default(ks_listener_pwd="")
-        self.ks.set_default(ts_listener_pwd="")
+        self.ks.set_default(ks_listener_pwd=genRandomPassword())
+        self.ks.set_default(ts_listener_pwd=genRandomPassword())
+        self.ks.set_default(listener_plaintext_pwd=genRandomPassword(24))
 
     def on_schemaregistry_relation_joined(self, event):
         if not self._cert_relation_set(
@@ -142,7 +143,9 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
         req["is_public"] = False
         if self.is_ssl_enabled():
             req["cert"] = self.get_ssl_cert()
-        req["plaintext_pwd"] = genRandomPassword(24)
+        if len(self.ks.listener_plaintext_pwd) == 0:
+            self.ks.listener_plaintext_pwd = genRandomPassword(24)
+        req["plaintext_pwd"] = self.ks.listener_plaintext_pwd
         self.listener.set_request(req)
 
     def on_listeners_relation_joined(self, event):
@@ -200,6 +203,8 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
         else:
             raise Exception("Not Implemented Yet")
         super().install_packages('openjdk-11-headless', packages)
+        make_dirs = ["/var/log/schema-registry"]
+        self.set_folders_and_permissions(make_dirs)
 
     def _check_if_ready_to_start(self):
         self.model.unit.status = \
@@ -216,11 +221,11 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
         return path
 
     def get_ssl_listener_keystore(self):
-        path = self.config.get("keystore-listener-path", "")
+        path = self.config.get("listener-keystore-path", "")
         return path
 
     def get_ssl_listener_truststore(self):
-        path = self.config.get("truststore-listener-path", "")
+        path = self.config.get("listener-truststore-path", "")
         return path
 
     # SSL GET METHODS
@@ -251,7 +256,7 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
                 else:
                     return base64.b64decode(
                         self.config[prefix + "_key"]).decode("ascii")
-        
+
         certs = self.certificates.get_server_certs()
         c = certs[relation.binding_addr][ty]
         if ty == "cert":
@@ -282,7 +287,6 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
             if len(t[CERT]) > 0 and len(t[KEY]) > 0 and t[GET_KEYSTORE]():
                 logger.info("Create PKCS12 cert/key for {}".format(t[CERT]))
                 logger.debug("Iteration: {}".format(t))
-                t[PWD] = genRandomPassword()
                 filename = genRandomPassword(6)
                 PKCS12CreateKeystore(
                     t[GET_KEYSTORE](),
