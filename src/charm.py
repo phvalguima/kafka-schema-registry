@@ -126,6 +126,7 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
                 event, self.sr,
                 extra_sans=self.config.get("schema_url", None)):
             return
+        self.sr.on_schema_registry_relation_joined(event)
         self._on_config_changed(event)
 
     def on_schemaregistry_relation_changed(self, event):
@@ -133,6 +134,7 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
                 event, self.sr,
                 extra_sans=self.config.get("schema_url", None)):
             return
+        self.sr.on_schema_registry_relation_changed(event)
         self._on_config_changed(event)
 
     def _generate_listener_request(self):
@@ -459,7 +461,9 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
         self.model.unit.status = \
             MaintenanceStatus("Setting schema registry parameters")
         # Manage Schema Registry relation
-        self.sr.set_schema_url(self.config.get("schema_url", ""))
+        self.sr.set_schema_url(self.config.get("schema_url", ""),
+                               self.config.get("clientPort", 8081),
+                               self.config.get("protocol", "https"))
         self.sr.set_converter(self.config.get("schema_converter", ""))
         self.sr.set_enhanced_avro_support(
             self.config.get("enhanced_avro_schema_support", ""))
@@ -474,6 +478,10 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
             return
         except SchemaRegistryCharmMissingRelationError:
             # same reason as above, waiting for an add-relation
+            return
+        except KafkaListenerRelationNotSetError as e:
+            logger.warn("Listener relation not ready yet: {}".format(str(e)))
+            event.defer()
             return
         self.model.unit.status = MaintenanceStatus("Render log4j properties")
         logger.debug("Running log4j properties renderer")
