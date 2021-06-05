@@ -29,13 +29,18 @@ options:
     type: string
     description: |
       Sets the kafka version for the given distro.
-  schema_url:
+  api_url:
     default: ''
     type: string
     description: |
-      URL to be used as access-point to the schema-registry service.
-      Setting it as "https://" or "http://" will trigger use of SSL or not. Simple URLs
-      will default as "http://" only.
+      URL: overrides the value used by default to set the API endpoint.
+      If unset, the hostname of the advertised address for the connect interface will be used.
+  listener:
+    default: "0.0.0.0"
+    type: string
+    description: |
+      Listener address and protocol to be used. The listener field is generated with this value
+      and the clientPort.
   schema_converter:
     default: "io.confluent.connect.avro.AvroConverter"
     type: string
@@ -112,12 +117,71 @@ options:
     type: string
     description: |
       Resource extension class to be set on schema registry properties.
+  rest-servlet-initializor-classes: 
+    default: "io.confluent.common.security.jetty.initializer.InstallBearerOrBasicSecurityHandler"
+    type: string
+    description: |
+      REST servlet intialization classes for schema registry
   generate-root-ca:
     default: False
     type: boolean
     description: |
       If set, generate self-signed certificates to replace ssl* configs.
       DEPRECATED: use certificates relation instead.
+  sasl-protocol:
+    default: ''
+    type: string
+    description: |
+      Define which of the SASL protocols should be used for authentication. In the case of Zookeeper,
+      only kerberos and digest methods are available.
+  mds_public_key_path:
+    default: "/var/ssl/private/public.pem"
+    type: string
+    description: |
+      Path to be used to store the public key that will encrypt the oauthbearer token
+  mds_user:
+    default: ''
+    type: string
+    description: |
+      Set MDS user for the OAUTHBEARER. Only available on Confluent distro.
+      In case Brokers are configured for LDAP, then mds_user should be the LDAP user for kafka_rest.
+  mds_password:
+    default: ''
+    type: string
+    description: |
+      Set mds password for the OAUTHBEARER. Only available on Confluent distro.
+      In case Brokers are configured for LDAP, then mds_user should be the LDAP user for kafka_rest.
+  kerberos-admin-hostname:
+    default: ''
+    type: string
+    description: |
+      Set the kerberos admin hostname to authenticate with.
+  kerberos-kdc-hostname:
+    default: ''
+    type: string
+    description: |
+      Set the kerberos kdc hostname to authenticate with.
+  kerberos-protocol:
+    default: ''
+    type: string
+    description: |
+      Set the kerberos protocol. This will form the principal such as: {{protocol}}/<hostname>@<realm>
+  kerberos-realm:
+    default: ''
+    type: string
+    description: |
+      Set the kerberos realm value.
+  kerberos-domain:
+    default: ''
+    type: string
+    description: |
+      Defines the kerberos domain for the host: {{protocol}}/<name of the host>.<kerberos-domain>@<realm>
+      The value set here should be the domain for the default gateway's IP.
+  keystore-path:
+    default: '/var/ssl/private/zookeeper.keystore.jks'
+    type: string
+    description: |
+      Path to the keystore
   ssl_cert:
     default: ''
     type: string
@@ -217,7 +281,9 @@ options:
     description: |
       Settings to be added to zookeeper.properties file.
       YAML formatted list of items
-    default: ''
+    default: |
+      confluent.schema.registry.auth.mechanism: JETTY_AUTH
+      confluent.schema.registry.authorizer.class: io.confluent.kafka.schemaregistry.security.authorizer.rbac.RbacAuthorizer
   jmx-exporter-port:
     type: int
     default: 8079

@@ -14,6 +14,8 @@ provides:
 requires:
   mds:
     interface: mds
+  c3:
+    interface: confluent-control-center
   listeners:
     interface: listeners
   certificates:
