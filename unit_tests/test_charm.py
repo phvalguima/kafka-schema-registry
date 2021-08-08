@@ -16,6 +16,8 @@ import wand.apps.relations.kafka_mds as kafka_mds
 import wand.apps.relations.kafka_listener as kafka_listener
 import wand.apps.relations.kafka_schema_registry as kafka_sr
 
+from loadbalancer_interface import LBProvider
+
 TO_PATCH_LINUX = [
     "userAdd",
     "groupAdd"
@@ -86,7 +88,19 @@ class TestCharm(unittest.TestCase):
     def setUp(self):
         super().setUp()
 
-    def test_config_changed_missing_listeners(self):
+    @patch.object(charm.LBProvider, "is_available")
+    @patch.object(charm, "close_port")
+    @patch.object(kafka, "open_port")
+    @patch.object(charm, "open_port")
+    @patch.object(kafka.KafkaJavaCharmBasePrometheusMonitorNode,
+                  'advertise_addr', new_callable=PropertyMock)
+    def test_config_changed_missing_listeners(self,
+                                              mock_prometheus_advert_addr,
+                                              mock_open_port,
+                                              mock_kafka_open_port,
+                                              mock_close_port,
+                                              mock_lb_available):
+        mock_lb_available.return_value = False
         self.harness = Harness(charm.KafkaSchemaRegistryCharm)
         self.addCleanup(self.harness.cleanup)
         self.harness.begin()
@@ -98,6 +112,12 @@ class TestCharm(unittest.TestCase):
         self.assertEqual(
             connect.unit.status.message, "Waiting for listener relation")
 
+    @patch.object(charm.LBProvider, "is_available")
+    @patch.object(charm, "close_port")
+    @patch.object(kafka, "open_port")
+    @patch.object(charm, "open_port")
+    @patch.object(kafka.KafkaJavaCharmBasePrometheusMonitorNode,
+                  'advertise_addr', new_callable=PropertyMock)
     @patch.object(kafka_sr.KafkaSchemaRegistryProvidesRelation,
                   "schema_url", new_callable=PropertyMock)
     @patch.object(kafka_listener.KafkaListenerRequiresRelation,
@@ -153,7 +173,14 @@ class TestCharm(unittest.TestCase):
                                         mock_java_gen_pwd,
                                         mock_render_svc_override,
                                         mock_bootstrap_data,
-                                        mock_sr_url_setter):
+                                        mock_sr_url_setter,
+                                        mock_prometheus_advert_addr,
+                                        mock_open_port,
+                                        mock_kafka_open_port,
+                                        mock_close_port,
+                                        mock_lb_available):
+        mock_lb_available.return_value = False
+        mock_prometheus_advert_addr.return_value = "192.168.200.200"
         mock_get_ssl_cert.return_value = "a"
         mock_get_ssl_key.return_value = "a"
         mock_gen_pwd.return_value = "confluentkeystorestorepass"
@@ -225,6 +252,12 @@ class TestCharm(unittest.TestCase):
             set(CONFIG_CHANGED.split("\n")),
             set(simulate_render.split("\n")))
 
+    @patch.object(charm.LBProvider, "is_available")
+    @patch.object(charm, "close_port")
+    @patch.object(kafka, "open_port")
+    @patch.object(charm, "open_port")
+    @patch.object(kafka.KafkaJavaCharmBasePrometheusMonitorNode,
+                  'advertise_addr', new_callable=PropertyMock)
     # Patch methods to evaluate relation is correctly set
     @patch.object(kafka_sr.KafkaSchemaRegistryProvidesRelation,
                   "set_enhanced_avro_support")
@@ -291,7 +324,14 @@ class TestCharm(unittest.TestCase):
                                        mock_sr_rel_tls_auth,
                                        mock_sr_url_setter,
                                        mock_converter_setter,
-                                       mock_sr_enchanced_avro):
+                                       mock_sr_enchanced_avro,
+                                       mock_prometheus_advert_addr,
+                                       mock_open_port,
+                                       mock_kafka_open_port,
+                                       mock_close_port,
+                                       mock_lb_available):
+        mock_lb_available.return_value = False
+        mock_prometheus_advert_addr.return_value = "192.168.200.200"
         mock_get_ssl_cert.return_value = "a"
         mock_get_ssl_key.return_value = "a"
         mock_gen_pwd.return_value = "confluentkeystorestorepass"

@@ -8,9 +8,16 @@ summary: |
 series:
   - bionic
 subordinate: false
+peers:
+  cluster:
+    interface: schema-registry-peer
 provides:
   schemaregistry:
     interface: schemaregistry
+  prometheus-manual:
+    interface: prometheus-manual
+  nrpe-external-master:
+    interface: nrpe-external-master
 requires:
   mds:
     interface: mds
@@ -20,6 +27,9 @@ requires:
     interface: listeners
   certificates:
     interface: tls-certificates
+  lb-provider:
+    interface: loadbalancer
+    limit: 1
 resources:                                                  
   archive:                                                  
     type: file                                              

@@ -2,6 +2,7 @@
 # Copyright 2021 pguimaraes
 # See LICENSE file for licensing details.
 
+import json
 import base64
 import logging
 import yaml
@@ -21,12 +22,19 @@ from charmhelpers.core.host import (
     service_reload
 )
 
+from charmhelpers.core.hookenv import (
+    open_port,
+    close_port
+)
+
 from wand.apps.relations.tls_certificates import (
     TLSCertificateRequiresRelation
 )
 from wand.apps.kafka import (
     KafkaJavaCharmBase,
-    KafkaCharmBaseFeatureNotImplementedError
+    KafkaCharmBaseFeatureNotImplementedError,
+    KafkaJavaCharmBasePrometheusMonitorNode,
+    KafkaJavaCharmBaseNRPEMonitoring
 )
 from wand.apps.relations.kafka_mds import (
     KafkaMDSRequiresRelation
@@ -46,6 +54,10 @@ from wand.contrib.linux import get_hostname
 from wand.apps.relations.kafka_confluent_center import (
     KafkaC3RequiresRelation
 )
+
+from loadbalancer_interface import LBProvider
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -87,6 +99,10 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
         self.framework.observe(self.on.install, self._on_install)
         self.framework.observe(self.on.config_changed,
                                self._on_config_changed)
+        self.framework.observe(self.on.cluster_relation_joined,
+                               self._on_cluster_relation_joined)
+        self.framework.observe(self.on.cluster_relation_changed,
+                               self._on_cluster_relation_changed)
         self.framework.observe(self.on.listeners_relation_joined,
                                self.on_listeners_relation_joined)
         self.framework.observe(self.on.listeners_relation_changed,
@@ -109,6 +125,16 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
                                self.on_c3_relation_changed)
         self.framework.observe(self.on.update_status,
                                self._on_update_status)
+        # Load balancer settings
+        self.lb_provider = LBProvider(self, "lb-provider")
+        self.framework.observe(self.lb_provider.on.available,
+                               self._on_lb_provider_available)
+        # Load balancer configs:
+        self.ks.set_default(lb_port=0)
+        self.ks.set_default(lb_api_ip="")
+        self.ks.set_default(api_is_public=False)
+        #########
+        self.ks.set_default(ports=[0])
         # Relation managers
         self.listener = KafkaListenerRequiresRelation(
             self, 'listeners')
@@ -128,6 +154,65 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
         self.ks.set_default(ks_listener_pwd=genRandomPassword())
         self.ks.set_default(ts_listener_pwd=genRandomPassword())
         self.ks.set_default(listener_plaintext_pwd=genRandomPassword(24))
+        # LMA integrations
+        self.prometheus = \
+            KafkaJavaCharmBasePrometheusMonitorNode(
+                self, 'prometheus-manual',
+                port=self.config.get("jmx-exporter-port", 9404),
+                internal_endpoint=self.config.get(
+                    "jmx_exporter_use_internal", False),
+                labels=self.config.get("jmx_exporter_labels", None))
+        self.nrpe = KafkaJavaCharmBaseNRPEMonitoring(
+            self,
+            svcs=[self._get_service_name()],
+            endpoints=[],
+            nrpe_relation_name='nrpe-external-master')
+
+    def _on_lb_provider_available(self, event):
+        if not (self.unit.is_leader() and self.lb_provider.is_available):
+            return
+        # Check if there is any configuration changes:
+        if self.ks.lb_port == self.config["clientPort"] and \
+           self.ks.lb_api_ip == self.config["api_ip"] and \
+           self.ks.api_is_public == self.config["api_is_public"]:
+            # configs are the same, just return
+            return
+        request = self.lb_provider.get_request("lb-consumer")
+        request.protocol = request.protocols.tcp
+        request.port_mapping = {
+            self.config["clientPort"]: self.config["clientPort"]
+        }
+        if len(self.config.get("api_ip", "")) > 0:
+            request.ingress_address = self.config["api_ip"]
+        request.public = self.config["api_is_public"]
+        self.lb_provider.send_request(request)
+        # Now, save the data for the next request
+        self.ks.lb_port = self.config["clientPort"]
+        self.ks.lb_api_ip = self.config["api_ip"]
+        self.ks.api_is_public = self.config["api_is_public"]
+
+    def is_jmxexporter_enabled(self):
+        if self.prometheus.relations:
+            return True
+        return False
+
+    @property
+    def ctx(self):
+        return json.loads(self.ks.config_state)
+
+    @ctx.setter
+    def ctx(self, c):
+        self.ks.ctx = json.dumps(c)
+
+    def _on_cluster_relation_joined(self, event):
+        self._on_config_changed(event)
+
+    def _on_cluster_relation_changed(self, event):
+        self._on_config_changed(event)
+        if not self.prometheus.relations:
+            return
+        if len(self.prometheus.relations) > 0:
+            self.prometheus.on_prometheus_relation_changed(event)
 
     def on_c3_relation_joined(self, event):
         self._on_config_changed(event)
@@ -136,18 +221,10 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
         self._on_config_changed(event)
 
     def on_schemaregistry_relation_joined(self, event):
-        if not self._cert_relation_set(
-                event, self.sr,
-                extra_sans=self.config.get("api_url", None)):
-            return
         self.sr.on_schema_registry_relation_joined(event)
         self._on_config_changed(event)
 
     def on_schemaregistry_relation_changed(self, event):
-        if not self._cert_relation_set(
-                event, self.sr,
-                extra_sans=self.config.get("api_url", None)):
-            return
         self.sr.on_schema_registry_relation_changed(event)
         self._on_config_changed(event)
 
@@ -191,16 +268,39 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
         return req
 
     def on_listeners_relation_joined(self, event):
-        # If no certificate available, defer this event and wait
-        if not self._cert_relation_set(event, self.listener):
-            return
         self._on_config_changed(event)
 
     def on_listeners_relation_changed(self, event):
-        self.on_listeners_relation_joined(event)
+        try:
+            self.listener.on_listener_relation_changed(event)
+        except KafkaRelationBaseTLSNotSetError:
+            logger.warning(
+                "Detected some of the remote apps on listener relation "
+                "but still waiting for setup on this unit.")
+            # We need certs correctly configured to be able to set listeners
+            # because certs are configured on other peers.
+            # Defer this event until operator updates certificate info.
+            self.model.unit.status = BlockedStatus(
+                "Missing certificate info: listeners")
+            event.defer()
+            return
+        self._on_config_changed(event)
 
     def on_certificates_relation_joined(self, event):
         self.certificates.on_tls_certificate_relation_joined(event)
+        # Relation just joined, request certs for each of the relations
+        # That will happen once. The certificates will be generated, then
+        # it will trigger a -changed Event on certificates, which will
+        # call the config-changed logic once again.
+        # That way, the certificates will be added to the truststores
+        # and shared across the other relations.
+
+        # In case several relations shares the same set of IPs (spaces),
+        # the last relation will get to set the certificate values.
+        # Therefore, the order of the list below is relevant.
+        for r in [self.listener,
+                  self.sr]:
+            self._cert_relation_set(None, r)
         self._on_config_changed(event)
 
     def on_certificates_relation_changed(self, event):
@@ -208,9 +308,6 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
         self._on_config_changed(event)
 
     def on_mds_relation_joined(self, event):
-        # If no certificate available, defer this event and wait
-        if not self._cert_relation_set(event, self.mds):
-            return
         self._on_config_changed(event)
 
     def on_mds_relation_changed(self, event):
@@ -298,7 +395,7 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
 
         if not relation or not self.certificates:
             raise KafkaRelationBaseTLSNotSetError(
-                "_get_ssl relatio {} or certificates"
+                "_get_ssl relation {} or certificates"
                 " not available".format(relation))
         certs = self.certificates.get_server_certs()
         c = certs[relation.binding_addr][ty]
@@ -390,46 +487,47 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
         # 2.1) Set SSL options
         # TODO(pguimaraes): recover extra certs set by actions
         extra_certs = []
-
-        if len(self.get_ssl_key()) > 0 and len(self.get_ssl_cert()) > 0 and \
-           len(self.get_ssl_truststore()):
-            if len(self.get_ssl_keystore()) == 0:
-                raise SchemaRegistryCharmNotValidOptionSetError(
-                    "keystore-path")
-            sr_props["security.protocol"] = "SSL"
-            sr_props["inter.instance.protocol"] = "https"
-            if len(self.get_ssl_truststore()) > 0:
-                sr_props["ssl.truststore.location"] = \
-                    self.get_ssl_truststore()
-                sr_props["ssl.truststore.password"] = \
-                    self.ks.ts_password
-            if len(self.get_ssl_keystore()) > 0:
-                sr_props["ssl.key.password"] = self.ks.ks_password
-                sr_props["ssl.keystore.location"] = self.get_ssl_keystore()
-                sr_props["ssl.keystore.password"] = self.ks.ks_password
-            # Pass the TLS along
-            if self.sr.relations:
-                self.sr.set_TLS_auth(
-                    self.get_ssl_cert(),
-                    self.get_ssl_truststore(),
-                    self.ks.ts_password,
-                    user=self.config["user"],
-                    group=self.config["group"],
-                    mode=0o640)
-            else:
-                # We should consider the situation where connect
-                # is only exposed
-                # to the outside and no relations are set
-                ts_regenerate = \
-                    self.config["regenerate-keystore-truststore"]
-                CreateTruststore(
-                    self.get_ssl_truststore(),
-                    self.ks.ts_password,
-                    extra_certs,
-                    ts_regenerate=ts_regenerate,
-                    user=self.config["user"],
-                    group=self.config["group"],
-                    mode=0o640)
+        # If keystore value is set as empty, no certs are used.
+        if len(self.get_ssl_keystore()) > 0:
+            if len(self.get_ssl_key()) > 0 and len(self.get_ssl_cert()) > 0 and \
+               len(self.get_ssl_truststore()):
+                if len(self.get_ssl_keystore()) == 0:
+                    raise SchemaRegistryCharmNotValidOptionSetError(
+                        "keystore-path")
+                sr_props["security.protocol"] = "SSL"
+                sr_props["inter.instance.protocol"] = "https"
+                if len(self.get_ssl_truststore()) > 0:
+                    sr_props["ssl.truststore.location"] = \
+                        self.get_ssl_truststore()
+                    sr_props["ssl.truststore.password"] = \
+                        self.ks.ts_password
+                if len(self.get_ssl_keystore()) > 0:
+                    sr_props["ssl.key.password"] = self.ks.ks_password
+                    sr_props["ssl.keystore.location"] = self.get_ssl_keystore()
+                    sr_props["ssl.keystore.password"] = self.ks.ks_password
+                # Pass the TLS along
+                if self.sr.relations:
+                    self.sr.set_TLS_auth(
+                        self.get_ssl_cert(),
+                        self.get_ssl_truststore(),
+                        self.ks.ts_password,
+                        user=self.config["user"],
+                        group=self.config["group"],
+                        mode=0o640)
+                else:
+                    # We should consider the situation where connect
+                    # is only exposed
+                    # to the outside and no relations are set
+                    ts_regenerate = \
+                        self.config["regenerate-keystore-truststore"]
+                    CreateTruststore(
+                        self.get_ssl_truststore(),
+                        self.ks.ts_password,
+                        extra_certs,
+                        ts_regenerate=ts_regenerate,
+                        user=self.config["user"],
+                        group=self.config["group"],
+                        mode=0o640)
         else:
             sr_props["security.protocol"] = "PLAINTEXT"
             sr_props["inter.instance.protocol"] = "http"
@@ -450,14 +548,16 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
         sr_props["kafkastore.topic"] = "_schemas"
         sr_props["kafkastore.topic.replication.factor"] = 3
         # Generate certs for listener relations
-        if self.get_ssl_listener_truststore():
-            self.listener.set_TLS_auth(
-                self.get_ssl_listener_cert(),
-                self.get_ssl_listener_truststore(),
-                self.ks.ts_listener_pwd,
-                user=self.config["user"],
-                group=self.config["group"],
-                mode=0o640)
+        # Only used if keystore exists
+        if self.get_ssl_listener_keystore():
+            if self.get_ssl_listener_truststore():
+                self.listener.set_TLS_auth(
+                    self.get_ssl_listener_cert(),
+                    self.get_ssl_listener_truststore(),
+                    self.ks.ts_listener_pwd,
+                    user=self.config["user"],
+                    group=self.config["group"],
+                    mode=0o640)
         # Generate the request for listener
         self.model.unit.status = \
             MaintenanceStatus("Generate Listener settings")
@@ -476,13 +576,14 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
             }}
 
         # 4) Set metadata and C3 information
-        mds_opts = self.mds.generate_configs(
-            self.config["mds_public_key_path"],
-            self.config.get("mds_user", ""),
-            self.config.get("mds_password", "")
-        )
-        if mds_opts:
-            sr_props = {**sr_props, **mds_opts}
+        if self.distro == "confluent":
+            mds_opts = self.mds.generate_configs(
+                self.config["mds_public_key_path"],
+                self.config.get("mds_user", ""),
+                self.config.get("mds_password", "")
+            )
+            if mds_opts:
+                sr_props = {**sr_props, **mds_opts}
         # There seems to be no need for the inspector listeners
         # which comes alongside C3. Will drop this relation for now.
 
@@ -519,7 +620,8 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
         1) Check for any missing relations
         2) Check if TLS is set and configured correctly
         3) Prepare context: generate the configuration files
-        4) Restart cycle"""
+        4) Open ports
+        5) Rerun loadbalancer configs"""
 
         # 1) Check for any missing relations
         if not self.listener.relations:
@@ -528,9 +630,6 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
             # Abandon event as new relation -changed will trigger it again
             return
 
-        # 2) Check if TLS is set and configured correctly
-        if not self._cert_relation_set(event):
-            return
         self.model.unit.status = \
             MaintenanceStatus("generate certs and keys if needed")
 
@@ -579,6 +678,17 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
             logger.warning("Service not running that "
                            "should be: {}".format(self.service))
             BlockedStatus("Service not running {}".format(self.service))
+        # 4) Open ports
+        # 4.1) Close original ports
+        for p in self.ks.ports:
+            if p > 0:
+                close_port(p)
+        # 4.2) Open ports for the newly found listeners
+        open_port(self.config.get("clientPort", 8081))
+        self.ks.ports[0] = self.config.get("clientPort", 8081)
+
+        # 5) Rerun load balancer config
+        self._on_lb_provider_available(event)
 
 
 if __name__ == "__main__":

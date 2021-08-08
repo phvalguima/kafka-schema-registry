@@ -29,12 +29,22 @@ options:
     type: string
     description: |
       Sets the kafka version for the given distro.
+  api_ip:
+    default: ''
+    type: string
+    description: |
+      VIP that is associated with the api_url configuration, if available.
   api_url:
     default: ''
     type: string
     description: |
       URL: overrides the value used by default to set the API endpoint.
       If unset, the hostname of the advertised address for the connect interface will be used.
+  api_is_public:
+    default: False
+    type: boolean
+    description: |
+      In the case a Load Balancer is being requested, set if the VIP / URL should be public or not
   listener:
     default: "0.0.0.0"
     type: string
@@ -283,10 +293,40 @@ options:
       YAML formatted list of items
     default: |
       confluent.schema.registry.auth.mechanism: JETTY_AUTH
-      confluent.schema.registry.authorizer.class: io.confluent.kafka.schemaregistry.security.authorizer.rbac.RbacAuthorizer
-  jmx-exporter-port:
-    type: int
-    default: 8079
+      confluent.schema.registry.authorizer.class: io.confluent.kafka.schemaregistry.security.authorizer.rbac.RbacAuthorizer  
+  jmx_exporter_version: 
+    default: "0.12.0"
+    type: string
     description: |
-      Path to expose prometheus metrics for scraping.      
-    
+      Value set for the version of the JMX Exporter.
+  jmx_exporter_url:
+    default: "https://repo1.maven.org/maven2/io/prometheus/jmx/jmx_prometheus_javaagent/{}/jmx_prometheus_javaagent-{}.jar"
+    type: string
+    description: |
+      Maven's URL from where JMX jar can be downloaded.
+      Replace the version value with "{}" for the versions.
+  jmx-exporter-port: 
+    default: 9404
+    type: int
+    description: |
+      Port to be exposed by the exporter for prometheus.
+  jmx_exporter_labels: 
+    default: ""
+    type: string
+    description: |
+      Comma-separated list of key=value tags.
+  jmx_exporter_use_internal: 
+    default: false
+    type: boolean
+    description: |
+      Use the internal or advertised address in the prometheus relation.
+      If False, the advertised address will be used.
+  nagios_context:
+    default: "juju"
+    type: string
+    description: |
+      Used by the nrpe subordinate charms. A string that will be prepended
+      to instance name to set the host name in nagios. So for instance the
+      hostname would be something like: juju-myservice-0 If you're running
+      multiple environments with the same services in them this allows you
+      to differentiate between them.

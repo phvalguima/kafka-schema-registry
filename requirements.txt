@@ -5,3 +5,5 @@ netaddr>0.7.16,<0.7.19
 python-hosts==1.0.1
 git+https://github.com/phvalguima/charms.wand#egg=wand
 git+https://github.com/juju/charm-helpers.git#egg=charmhelpers
+git+https://github.com/canonical/ops-lib-nrpe#egg=ops-lib-nrpe
+git+https://github.com/juju-solutions/loadbalancer-interface#egg=loadbalancer_interface
