@@ -28,7 +28,9 @@ from charmhelpers.core.hookenv import (
 )
 
 from wand.apps.relations.tls_certificates import (
-    TLSCertificateRequiresRelation
+    TLSCertificateRequiresRelation,
+    TLSCertificateDataNotFoundInRelationError,
+    TLSCertificateRelationNotPresentError
 )
 from wand.apps.kafka import (
     KafkaJavaCharmBase,
@@ -397,13 +399,18 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
             raise KafkaRelationBaseTLSNotSetError(
                 "_get_ssl relation {} or certificates"
                 " not available".format(relation))
-        certs = self.certificates.get_server_certs()
-        c = certs[relation.binding_addr][ty]
-        if ty == "cert":
-            c = c + \
-                self.certificates.get_chain()
-        logger.debug("SSL {} for {}"
-                     " from tls-certificates: {}".format(ty, prefix, c))
+        try:
+            certs = self.certificates.get_server_certs()
+            c = certs[relation.binding_addr][ty]
+            if ty == "cert":
+                c = c + \
+                    self.certificates.get_chain()
+            logger.debug("SSL {} for {}"
+                         " from tls-certificates: {}".format(ty, prefix, c))
+        except (TLSCertificateDataNotFoundInRelationError,
+                TLSCertificateRelationNotPresentError):
+            # Certificates not ready yet, return empty
+            return ""
         return c
 
     def _generate_keystores(self):
@@ -531,8 +538,11 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
         else:
             sr_props["security.protocol"] = "PLAINTEXT"
             sr_props["inter.instance.protocol"] = "http"
+        # If keystore option is set but certificates relation are not
+        # yet configured, inter.instance.protocol will not exist within
+        # sr_props. Therefore, assume http in these cases.
         sr_props["listeners"] = "{}://{}:{}".format(
-            sr_props["inter.instance.protocol"],
+            sr_props.get("inter.instance.protocol", "http"),
             self.config.get("listener", "0.0.0.0"),
             self.config.get("clientPort", 8081))
 
@@ -574,6 +584,9 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
             sr_props = {**sr_props, **{
                 "kafkastore.{}".format(k): v for k, v in listener_opts.items()
             }}
+        else:
+            logger.warning("get_bootstrap_data returned empty in "
+                           "kafka_listeners")
 
         # 4) Set metadata and C3 information
         if self.distro == "confluent":

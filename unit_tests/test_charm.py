@@ -16,8 +16,6 @@ import wand.apps.relations.kafka_mds as kafka_mds
 import wand.apps.relations.kafka_listener as kafka_listener
 import wand.apps.relations.kafka_schema_registry as kafka_sr
 
-from loadbalancer_interface import LBProvider
-
 TO_PATCH_LINUX = [
     "userAdd",
     "groupAdd"
@@ -373,9 +371,7 @@ class TestCharm(unittest.TestCase):
         lst_id = self.harness.add_relation("listeners", "broker")
         self.harness.add_relation_unit(lst_id, 'broker/0')
         self.harness.update_relation_data(lst_id, 'broker/0', {
-            "bootstrap-data": '''{ "kafka_schema_registry": {
-                "bootstrap_server": "ansiblebroker1.example.com:9092"
-            }}'''
+            "bootstrap-data": "{ \"kafka_schema_registry\": {\"bootstrap_server\": \"ansiblebroker1.example.com:9092\"}}" # noqa
         })
         # SCHEMA REGISTRY RELATION SETUP
         sr_id = self.harness.add_relation("schemaregistry", "target")
