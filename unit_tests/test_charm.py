@@ -118,8 +118,6 @@ class TestCharm(unittest.TestCase):
                   'advertise_addr', new_callable=PropertyMock)
     @patch.object(kafka_sr.KafkaSchemaRegistryProvidesRelation,
                   "schema_url", new_callable=PropertyMock)
-    @patch.object(kafka_listener.KafkaListenerRequiresRelation,
-                  "get_bootstrap_data")
     @patch.object(charm.KafkaSchemaRegistryCharm,
                   "render_service_override_file",
                   new_callable=PropertyMock)
@@ -170,7 +168,6 @@ class TestCharm(unittest.TestCase):
                                         mock_gen_pwd,
                                         mock_java_gen_pwd,
                                         mock_render_svc_override,
-                                        mock_bootstrap_data,
                                         mock_sr_url_setter,
                                         mock_prometheus_advert_addr,
                                         mock_open_port,
@@ -203,7 +200,8 @@ class TestCharm(unittest.TestCase):
             "mds_public_key_path": "/var/ssl/private/public.pem",
             "mds_user": "schema_registry",
             "mds_password": "password123",
-            "confluent_license_topic": "_confluent-license"
+            "confluent_license_topic": "_confluent-license",
+            "resource-extension-class": "io.confluent.kafka.schemaregistry.security.SchemaRegistrySecurityResourceExtension" # noqa
         })
         # MDS RELATION SETUP
         mds_id = self.harness.add_relation("mds", "broker")
@@ -219,15 +217,22 @@ class TestCharm(unittest.TestCase):
         self.harness.add_relation_unit(lst_id, 'broker/0')
         self.harness.update_relation_data(lst_id, 'broker/0', {
             "bootstrap-data": '''{ "kafka_schema_registry": {
-                "bootstrap_server": "ansiblebroker1.example.com:9092"
-            }}'''
+                "bootstrap_server": "ansiblebroker1.example.com:9092",
+                "cert_present": true,
+                "sasl_present": true,
+                "secprot": "SASL_SSL",
+                "SASL": {
+                  "jaas.config": "org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule required username=\\\"schema_registry\\\" password=\\\"password123\\\" metadataServerUrls=\\\"https://ansiblebroker1.example.com:8090\\\";",
+                  "protocol": "OAUTHBEARER",
+                  "publicKeyPath": "filepath",
+                  "publicKey": "base64-public-key",
+                  "confluent": {
+                    "login.callback": "io.confluent.kafka.clients.plugins.auth.token.TokenUserLoginCallbackHandler"
+                  }
+                },
+                "cert": "certcert"
+            }}''' # noqa
         })
-        # Override the bootstrap_data method to return the request
-        # generated for the listener.
-        # 1st, call the actual _generate_listener_request(),
-        # to push data onto the relations
-        mock_bootstrap_data.return_value = sr._generate_listener_request()
-        print("This is the bootstrap data value", sr.listener.get_bootstrap_data())
         # CONFLUENT CENTER RELATION SETUP
         c3_id = self.harness.add_relation("c3", "c3")
         self.harness.add_relation_unit(c3_id, 'c3/0')
@@ -266,8 +271,6 @@ class TestCharm(unittest.TestCase):
     #####
     @patch.object(kafka_sr.KafkaSchemaRegistryProvidesRelation,
                   "set_TLS_auth")
-    @patch.object(kafka_listener.KafkaListenerRequiresRelation,
-                  "get_bootstrap_data")
     @patch.object(charm.KafkaSchemaRegistryCharm,
                   "render_service_override_file",
                   new_callable=PropertyMock)
@@ -318,7 +321,6 @@ class TestCharm(unittest.TestCase):
                                        mock_gen_pwd,
                                        mock_java_gen_pwd,
                                        mock_render_svc_override,
-                                       mock_bootstrap_data,
                                        mock_sr_rel_tls_auth,
                                        mock_sr_url_setter,
                                        mock_converter_setter,
@@ -371,17 +373,26 @@ class TestCharm(unittest.TestCase):
         lst_id = self.harness.add_relation("listeners", "broker")
         self.harness.add_relation_unit(lst_id, 'broker/0')
         self.harness.update_relation_data(lst_id, 'broker/0', {
-            "bootstrap-data": "{ \"kafka_schema_registry\": {\"bootstrap_server\": \"ansiblebroker1.example.com:9092\"}}" # noqa
+            "bootstrap-data": '''{ "kafka_schema_registry": {
+                "bootstrap_server": "ansiblebroker1.example.com:9092",
+                "cert_present": true,
+                "sasl_present": true,
+                "secprot": "SASL_SSL",
+                "SASL": {
+                  "jaas.config": "org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule required username=\\\"schema_registry\\\" password=\\\"password123\\\" metadataServerUrls=\\\"https://ansiblebroker1.example.com:8090\\\";",
+                  "protocol": "OAUTHBEARER",
+                  "publicKeyPath": "filepath",
+                  "publicKey": "base64-public-key",
+                  "confluent": {
+                    "login.callback": "io.confluent.kafka.clients.plugins.auth.token.TokenUserLoginCallbackHandler"
+                  }
+                },
+                "cert": "certcert"
+            }}''' # noqa
         })
         # SCHEMA REGISTRY RELATION SETUP
         sr_id = self.harness.add_relation("schemaregistry", "target")
         self.harness.add_relation_unit(sr_id, 'target/0')
-        # Override the bootstrap_data method to return the request
-        # generated for the listener.
-        # 1st, call the actual _generate_listener_request(),
-        # to push data onto the relations
-        mock_bootstrap_data.return_value = sr._generate_listener_request()
-        print("This is the bootstrap data value", sr.listener.get_bootstrap_data())
         # CONFLUENT CENTER RELATION SETUP
         c3_id = self.harness.add_relation("c3", "c3")
         self.harness.add_relation_unit(c3_id, 'c3/0')

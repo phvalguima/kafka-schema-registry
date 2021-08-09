@@ -123,10 +123,12 @@ options:
     description: |
       Group ID for the schema registry cluster
   resource-extension-class:
-    default: "io.confluent.kafka.schemaregistry.security.SchemaRegistrySecurityResourceExtension"
+    default: ""
     type: string
     description: |
       Resource extension class to be set on schema registry properties.
+      Set it only if confluent license is set.
+      For confluent, advised value: "io.confluent.kafka.schemaregistry.security.SchemaRegistrySecurityResourceExtension"
   rest-servlet-initializor-classes: 
     default: "io.confluent.common.security.jetty.initializer.InstallBearerOrBasicSecurityHandler"
     type: string

@@ -42,7 +42,8 @@ from wand.apps.relations.kafka_mds import (
     KafkaMDSRequiresRelation
 )
 from wand.apps.relations.kafka_relation_base import (
-    KafkaRelationBaseTLSNotSetError
+    KafkaRelationBaseTLSNotSetError,
+    KafkaRelationBaseNotUsedError
 )
 from wand.apps.relations.kafka_listener import (
     KafkaListenerRequiresRelation,
@@ -416,8 +417,8 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
     def _generate_keystores(self):
         ks = [[self.ks.ssl_cert, self.ks.ssl_key, self.ks.ks_password,
                self.get_ssl_cert, self.get_ssl_key, self.get_ssl_keystore],
-              [self.ks.ssl_listener_cert, self.ks.ssl_listener_key,
 
+              [self.ks.ssl_listener_cert, self.ks.ssl_listener_key,
                self.ks.ks_listener_pwd,
                self.get_ssl_listener_cert, self.get_ssl_listener_key,
                self.get_ssl_listener_keystore]]
@@ -463,10 +464,12 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
             len(self.config["api_url"]) > 0 \
             else get_hostname(self.sr.advertise_addr)
         sr_props["debug"] = "true" if self.config["debug"] else "false"
-        sr_props["schema.registry.resource.extension.class"] = \
-            self.config.get("resource-extension-class")
-        sr_props["rest.servlet.initializor.classes"] = \
-            self.config.get("rest-servlet-initializor-classes")
+        if len(self.config.get("resource-extension-class")) > 0:
+            sr_props["schema.registry.resource.extension.class"] = \
+                self.config.get("resource-extension-class")
+        if len(self.config.get("rest-servlet-initializor-classes")) > 0:
+            sr_props["rest.servlet.initializor.classes"] = \
+                self.config.get("rest-servlet-initializor-classes")
 
         # Authentication roles and method logic:
         auth_method = self.config.get(
@@ -492,15 +495,12 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
 
         # 2) Set services options
         # 2.1) Set SSL options
-        # TODO(pguimaraes): recover extra certs set by actions
-        extra_certs = []
         # If keystore value is set as empty, no certs are used.
         if len(self.get_ssl_keystore()) > 0:
-            if len(self.get_ssl_key()) > 0 and len(self.get_ssl_cert()) > 0 and \
-               len(self.get_ssl_truststore()):
-                if len(self.get_ssl_keystore()) == 0:
-                    raise SchemaRegistryCharmNotValidOptionSetError(
-                        "keystore-path")
+            if len(self.get_ssl_key()) > 0 and len(self.get_ssl_cert()) > 0:
+                # TODO(pguimaraes): recover extra certs set by actions
+                extra_certs = [self.get_ssl_cert()]
+
                 sr_props["security.protocol"] = "SSL"
                 sr_props["inter.instance.protocol"] = "https"
                 if len(self.get_ssl_truststore()) > 0:
@@ -521,20 +521,41 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
                         user=self.config["user"],
                         group=self.config["group"],
                         mode=0o640)
-                else:
-                    # We should consider the situation where connect
-                    # is only exposed
-                    # to the outside and no relations are set
-                    ts_regenerate = \
-                        self.config["regenerate-keystore-truststore"]
-                    CreateTruststore(
-                        self.get_ssl_truststore(),
-                        self.ks.ts_password,
-                        extra_certs,
-                        ts_regenerate=ts_regenerate,
-                        user=self.config["user"],
-                        group=self.config["group"],
-                        mode=0o640)
+                if len(self.get_ssl_truststore()) > 0:
+                    try:
+                        self.sr._get_all_tls_cert()
+                    except (KafkaRelationBaseNotUsedError,
+                            KafkaRelationBaseTLSNotSetError):
+                        # TLS not fully complete set.
+                        # Generate with what is available.
+                        crt_list = []
+                        for r in self.sr.relations:
+                            for u in self.sr.all_units(r):
+                                if "tls_cert" in r.data[u]:
+                                    crt_list.append(r.data[u]["tls_cert"])
+                        if len(crt_list) == 0:
+                            crt_list = [self.get_ssl_cert()]
+                        CreateTruststore(
+                            self.get_ssl_truststore(),
+                            self.ks.ts_password,
+                            crt_list,
+                            ts_regenerate=True,
+                            user=self.config["user"],
+                            group=self.config["group"],
+                            mode=0o640)
+                    ## We should consider the situation where connect
+                    ## is only exposed
+                    ## to the outside and no relations are set
+                    #ts_regenerate = \
+                    #    self.config["regenerate-keystore-truststore"]
+                    #CreateTruststore(
+                    #    self.get_ssl_truststore(),
+                    #    self.ks.ts_password,
+                    #    extra_certs,
+                    #    ts_regenerate=ts_regenerate,
+                    #    user=self.config["user"],
+                    #    group=self.config["group"],
+                    #    mode=0o640)
         else:
             sr_props["security.protocol"] = "PLAINTEXT"
             sr_props["inter.instance.protocol"] = "http"
@@ -559,15 +580,51 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
         sr_props["kafkastore.topic.replication.factor"] = 3
         # Generate certs for listener relations
         # Only used if keystore exists
-        if self.get_ssl_listener_keystore():
+        # Also check for get_ssl_{cert|key}: if certificates is set via
+        # relation, then both will return empty while certificates are not
+        # ready to be used.
+        if self.get_ssl_listener_keystore() and \
+           len(self.get_ssl_listener_cert()) > 0 and \
+           len(self.get_ssl_listener_key()) > 0:
+            self.listener.set_TLS_auth(
+                self.get_ssl_listener_cert(),
+                self.get_ssl_listener_truststore(),
+                self.ks.ts_listener_pwd,
+                user=self.config["user"],
+                group=self.config["group"],
+                mode=0o640)
             if self.get_ssl_listener_truststore():
-                self.listener.set_TLS_auth(
-                    self.get_ssl_listener_cert(),
-                    self.get_ssl_listener_truststore(),
-                    self.ks.ts_listener_pwd,
-                    user=self.config["user"],
-                    group=self.config["group"],
-                    mode=0o640)
+                try:
+                    self.sr._get_all_tls_cert()
+                except (KafkaRelationBaseNotUsedError,
+                        KafkaRelationBaseTLSNotSetError):
+                    # TLS not fully complete set.
+                    # Generate with what is available.
+                    crt_list = list()
+                    for r in self.sr.relations:
+                        for u in self.sr.all_units(r):
+                            if "tls_cert" in r.data[u]:
+                                crt_list.append(r.data[u]["tls_cert"])
+                    CreateTruststore(
+                        self.get_ssl_listener_truststore(),
+                        self.ks.ts_listener_pwd,
+                        crt_list,
+                        ts_regenerate=True,
+                        user=self.config["user"],
+                        group=self.config["group"],
+                        mode=0o640) 
+                # TODO(pguimaraes): recover extra certs set by actions
+                #extra_certs = [self.get_ssl_listener_cert()]
+                #for u in self.relation.units:
+                #    extra_certs.append(self.relation.data[u])
+                #CreateTruststore(
+                #    self.get_ssl_listener_truststore(),
+                #    self.ks.ts_listener_pwd,
+                #    extra_certs,
+                #    ts_regenerate=ts_regenerate,
+                #    user=self.config["user"],
+                #    group=self.config["group"],
+                #    mode=0o640)
         # Generate the request for listener
         self.model.unit.status = \
             MaintenanceStatus("Generate Listener settings")
@@ -575,15 +632,13 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
         # Recover configs
         listener_opts = self.listener.generate_options(
             self.get_ssl_listener_keystore(),
-            self.ks.ks_password,
+            self.ks.ks_listener_pwd,
             self.get_ssl_listener_truststore(),
-            self.ks.ts_password,
-            prefix="")
+            self.ks.ts_listener_pwd,
+            prefix="kafkastore.")
         if listener_opts:
             # Also add listener endpoints for producer and consumer
-            sr_props = {**sr_props, **{
-                "kafkastore.{}".format(k): v for k, v in listener_opts.items()
-            }}
+            sr_props = {**sr_props, **listener_opts}
         else:
             logger.warning("get_bootstrap_data returned empty in "
                            "kafka_listeners")
