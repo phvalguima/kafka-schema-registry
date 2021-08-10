@@ -42,8 +42,7 @@ from wand.apps.relations.kafka_mds import (
     KafkaMDSRequiresRelation
 )
 from wand.apps.relations.kafka_relation_base import (
-    KafkaRelationBaseTLSNotSetError,
-    KafkaRelationBaseNotUsedError
+    KafkaRelationBaseTLSNotSetError
 )
 from wand.apps.relations.kafka_listener import (
     KafkaListenerRequiresRelation,
@@ -146,6 +145,7 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
             TLSCertificateRequiresRelation(self, 'certificates')
         self.mds = KafkaMDSRequiresRelation(self, "mds")
         self.c3 = KafkaC3RequiresRelation(self, "c3")
+        self.ks.set_default(ssl_certs=[])
         # States for the SSL part
         self.get_ssl_methods_list = [
             self.get_ssl_cert, self.get_ssl_key,
@@ -214,6 +214,8 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
         self._on_config_changed(event)
         if not self.prometheus.relations:
             return
+        # Update prometheus relation given it may mean a new unit
+        # is available.
         if len(self.prometheus.relations) > 0:
             self.prometheus.on_prometheus_relation_changed(event)
 
@@ -498,9 +500,6 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
         # If keystore value is set as empty, no certs are used.
         if len(self.get_ssl_keystore()) > 0:
             if len(self.get_ssl_key()) > 0 and len(self.get_ssl_cert()) > 0:
-                # TODO(pguimaraes): recover extra certs set by actions
-                extra_certs = [self.get_ssl_cert()]
-
                 sr_props["security.protocol"] = "SSL"
                 sr_props["inter.instance.protocol"] = "https"
                 if len(self.get_ssl_truststore()) > 0:
@@ -521,20 +520,23 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
                         user=self.config["user"],
                         group=self.config["group"],
                         mode=0o640)
-                if len(self.get_ssl_truststore()) > 0:
-                    try:
-                        self.sr._get_all_tls_cert()
-                    except (KafkaRelationBaseNotUsedError,
-                            KafkaRelationBaseTLSNotSetError):
-                        # TLS not fully complete set.
-                        # Generate with what is available.
-                        crt_list = []
+                if len(self.get_ssl_truststore()) > 0 and \
+                   len(self.get_ssl_cert()) > 0:
+                    # TLS not fully complete set.
+                    # Generate with what is available.
+                    crt_list = list(self.ks.ssl_certs)
+                    if len(crt_list) == 0 and len(self.get_ssl_cert()) > 0:
+                        # Not running a SR cluster, then manually add
+                        # unit's own cert
+                        crt_list = [self.get_ssl_cert()]
+                    if self.sr.relations:
                         for r in self.sr.relations:
-                            for u in self.sr.all_units(r):
+                            for u in r.units:
                                 if "tls_cert" in r.data[u]:
                                     crt_list.append(r.data[u]["tls_cert"])
-                        if len(crt_list) == 0:
-                            crt_list = [self.get_ssl_cert()]
+                    if len(crt_list) > 0:
+                        # We do have a certificate list to trust
+                        # Came from both cluster peers and SR relation
                         CreateTruststore(
                             self.get_ssl_truststore(),
                             self.ks.ts_password,
@@ -543,19 +545,6 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
                             user=self.config["user"],
                             group=self.config["group"],
                             mode=0o640)
-                    ## We should consider the situation where connect
-                    ## is only exposed
-                    ## to the outside and no relations are set
-                    #ts_regenerate = \
-                    #    self.config["regenerate-keystore-truststore"]
-                    #CreateTruststore(
-                    #    self.get_ssl_truststore(),
-                    #    self.ks.ts_password,
-                    #    extra_certs,
-                    #    ts_regenerate=ts_regenerate,
-                    #    user=self.config["user"],
-                    #    group=self.config["group"],
-                    #    mode=0o640)
         else:
             sr_props["security.protocol"] = "PLAINTEXT"
             sr_props["inter.instance.protocol"] = "http"
@@ -593,38 +582,30 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
                 user=self.config["user"],
                 group=self.config["group"],
                 mode=0o640)
-            if self.get_ssl_listener_truststore():
-                try:
-                    self.sr._get_all_tls_cert()
-                except (KafkaRelationBaseNotUsedError,
-                        KafkaRelationBaseTLSNotSetError):
-                    # TLS not fully complete set.
-                    # Generate with what is available.
-                    crt_list = list()
-                    for r in self.sr.relations:
-                        for u in self.sr.all_units(r):
+            if len(self.get_ssl_listener_truststore()) > 0 and \
+               len(self.get_ssl_listener_cert()) > 0:
+                crt_list = list()
+                if len(crt_list) == 0 and \
+                   len(self.get_ssl_listener_cert()) > 0:
+                    # Not running a SR cluster, then manually add
+                    # unit's own cert
+                    crt_list = [self.get_ssl_listener_cert()]
+                if self.listener.relations:
+                    for r in self.listener.relations:
+                        for u in r.units:
                             if "tls_cert" in r.data[u]:
                                 crt_list.append(r.data[u]["tls_cert"])
+                if len(crt_list) > 0:
+                    # We do have a certificate list to trust
+                    # Came from both cluster peers and SR relation
                     CreateTruststore(
-                        self.get_ssl_listener_truststore(),
-                        self.ks.ts_listener_pwd,
+                        self.get_ssl_truststore(),
+                        self.ks.ts_password,
                         crt_list,
                         ts_regenerate=True,
                         user=self.config["user"],
                         group=self.config["group"],
-                        mode=0o640) 
-                # TODO(pguimaraes): recover extra certs set by actions
-                #extra_certs = [self.get_ssl_listener_cert()]
-                #for u in self.relation.units:
-                #    extra_certs.append(self.relation.data[u])
-                #CreateTruststore(
-                #    self.get_ssl_listener_truststore(),
-                #    self.ks.ts_listener_pwd,
-                #    extra_certs,
-                #    ts_regenerate=ts_regenerate,
-                #    user=self.config["user"],
-                #    group=self.config["group"],
-                #    mode=0o640)
+                        mode=0o640)
         # Generate the request for listener
         self.model.unit.status = \
             MaintenanceStatus("Generate Listener settings")
@@ -687,6 +668,7 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
 
         1) Check for any missing relations
         2) Check if TLS is set and configured correctly
+        2.1) Share certs with cluster peers
         3) Prepare context: generate the configuration files
         4) Open ports
         5) Rerun loadbalancer configs"""
@@ -701,11 +683,26 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
         self.model.unit.status = \
             MaintenanceStatus("generate certs and keys if needed")
 
+        # 2) Get TLS and keystores generated
         # Prepare context: generate the configuration files
         ctx = {}
         logger.debug("Running _generate_keystores()")
         self._generate_keystores()
+        # 2.1) Share certs with cluster peers
+        if len(self.framework.model.relations["cluster"]) > 0:
+            cluster_rel = self.framework.model.relations["cluster"][0]
+            if cluster_rel:
+                # Update certificate information:
+                if len(self.get_ssl_cert()) > 0:
+                    cluster_rel.data[self.unit]["cert"] = self.get_ssl_cert()
+                    self.ks.ssl_certs = []
+                    # And read each certificate data, store on a StoredState
+                    for u in cluster_rel.units:
+                        if "cert" in cluster_rel.data[u]:
+                            self.ks.ssl_certs.append(
+                                cluster_rel.data[u]["cert"])
 
+        # 3) Prepare context and config files
         self.model.unit.status = \
             MaintenanceStatus("Render schema-registry.properties")
         logger.debug("Running render_schemaregistry_properties()")
@@ -742,10 +739,13 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
             service_reload(self.service)
             service_restart(self.service)
             logger.debug("finished restarting")
+            self.model.unit.status = \
+                ActiveStatus("Service is running")
         if not service_running(self.service):
             logger.warning("Service not running that "
                            "should be: {}".format(self.service))
-            BlockedStatus("Service not running {}".format(self.service))
+            self.model.unit.status = \
+                BlockedStatus("Service not running {}".format(self.service))
         # 4) Open ports
         # 4.1) Close original ports
         for p in self.ks.ports:

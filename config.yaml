@@ -292,10 +292,11 @@ options:
     type: string
     description: |
       Settings to be added to zookeeper.properties file.
-      YAML formatted list of items
-    default: |
-      confluent.schema.registry.auth.mechanism: JETTY_AUTH
-      confluent.schema.registry.authorizer.class: io.confluent.kafka.schemaregistry.security.authorizer.rbac.RbacAuthorizer  
+      YAML formatted list of items. For example, to add LDAP, add:
+      schema-registry-properties: |
+        confluent.schema.registry.auth.mechanism: JETTY_AUTH
+        confluent.schema.registry.authorizer.class: io.confluent.kafka.schemaregistry.security.authorizer.rbac.RbacAuthorizer
+    default: ""
   jmx_exporter_version: 
     default: "0.12.0"
     type: string
