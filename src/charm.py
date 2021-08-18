@@ -167,7 +167,7 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
                 labels=self.config.get("jmx_exporter_labels", None))
         self.nrpe = KafkaJavaCharmBaseNRPEMonitoring(
             self,
-            svcs=[self._get_service_name()],
+            svcs=[],
             endpoints=[],
             nrpe_relation_name='nrpe-external-master')
 
@@ -762,7 +762,11 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
         # 4.2) Open ports for the newly found listeners
         open_port(self.config.get("clientPort", 8081))
         self.ks.ports[0] = self.config.get("clientPort", 8081)
-
+        endpoints = ["127.0.0.1:{}".format(self.config.get("clientPort", 8081))]
+        self.nrpe.recommit_checks(
+            svcs=[],
+            endpoints=endpoints
+        )
         # 5) Rerun load balancer config
         self._on_lb_provider_available(event)
 
