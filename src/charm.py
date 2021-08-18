@@ -502,11 +502,6 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
             if len(self.get_ssl_key()) > 0 and len(self.get_ssl_cert()) > 0:
                 sr_props["security.protocol"] = "SSL"
                 sr_props["inter.instance.protocol"] = "https"
-                if len(self.get_ssl_truststore()) > 0:
-                    sr_props["ssl.truststore.location"] = \
-                        self.get_ssl_truststore()
-                    sr_props["ssl.truststore.password"] = \
-                        self.ks.ts_password
                 if len(self.get_ssl_keystore()) > 0:
                     sr_props["ssl.key.password"] = self.ks.ks_password
                     sr_props["ssl.keystore.location"] = self.get_ssl_keystore()
@@ -522,6 +517,10 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
                         mode=0o640)
                 if len(self.get_ssl_truststore()) > 0 and \
                    len(self.get_ssl_cert()) > 0:
+                    sr_props["ssl.truststore.location"] = \
+                        self.get_ssl_truststore()
+                    sr_props["ssl.truststore.password"] = \
+                        self.ks.ts_password
                     # TLS not fully complete set.
                     # Generate with what is available.
                     crt_list = list(self.ks.ssl_certs)
@@ -687,7 +686,16 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
         # Prepare context: generate the configuration files
         ctx = {}
         logger.debug("Running _generate_keystores()")
-        self._generate_keystores()
+        try:
+            self._generate_keystores()
+        except TLSCertificateDataNotFoundInRelationError:
+            logger.warn("Generate keystore could not find certificate "
+                        "relation data. Missing 'common_name'")
+            logger.debug("Certificate relation data is: {}".format(
+                self.certificates.relation.data[self.unit]
+            ))
+            self.model.unit.status = \
+                BlockedStatus("Missing data in certificates relation")
         # 2.1) Share certs with cluster peers
         if len(self.framework.model.relations["cluster"]) > 0:
             cluster_rel = self.framework.model.relations["cluster"][0]

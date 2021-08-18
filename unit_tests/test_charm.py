@@ -201,7 +201,10 @@ class TestCharm(unittest.TestCase):
             "mds_user": "schema_registry",
             "mds_password": "password123",
             "confluent_license_topic": "_confluent-license",
-            "resource-extension-class": "io.confluent.kafka.schemaregistry.security.SchemaRegistrySecurityResourceExtension" # noqa
+            "resource-extension-class": "io.confluent.kafka.schemaregistry.security.SchemaRegistrySecurityResourceExtension", # noqa
+            "schema-registry-properties": """  confluent.schema.registry.auth.mechanism: JETTY_AUTH
+  confluent.schema.registry.authorizer.class: io.confluent.kafka.schemaregistry.security.authorizer.rbac.RbacAuthorizer
+""" # noqa
         })
         # MDS RELATION SETUP
         mds_id = self.harness.add_relation("mds", "broker")

@@ -275,7 +275,7 @@ options:
       The LOG_DIR folder is not created automatically, except for /var/log/schema-registry
     default: |
        SCHEMA_REGISTRY_HEAP_OPTS: "-Xms1g -Xmx1g -XX:MetaspaceSize=96m -XX:+UseG1GC -XX:MaxGCPauseMillis=20 -XX:InitiatingHeapOccupancyPercent=35 -XX:G1HeapRegionSize=16M -XX:MinMetaspaceFreeRatio=50 -XX:MaxMetaspaceFreeRatio=80"
-       KAFKA_LOG4J_OPTS: "-Dlog4j.configuration=file:/etc/kafka/zookeeper-log4j.properties"
+       SCHEMA_REGISTRY_LOG4J_OPTS: "-Dlog4j.configuration=file:/etc/schema-registry/log4j.properties"
        LOG_DIR: "/var/log/schema-registry"
   service-unit-overrides:
     type: string
