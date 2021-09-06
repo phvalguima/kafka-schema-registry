@@ -51,6 +51,21 @@ options:
     description: |
       Listener address and protocol to be used. The listener field is generated with this value
       and the clientPort.
+  filepath-schema-registry-properties:
+    default: "/etc/schema-registry/schema-registry.properties"
+    type: string
+    description: |
+      Path to schema-registry.properties file
+  filepath-jaas-conf:
+    default: "/etc/kafka/jaas.conf"
+    type: string
+    description: |
+      Path to jaas.conf
+  filepath-log4j-properties:
+    default: "/etc/kafka/schema-registry_log4j.properties"
+    type: string
+    description: |
+      Path to the kafka broker's log4j properties.
   schema_converter:
     default: "io.confluent.connect.avro.AvroConverter"
     type: string
@@ -273,6 +288,8 @@ options:
       YAML formatted list of extra arguments to be added to [Environment] field of the service.
       If Schema Registry secrets protection is enabled, set: CONFLUENT_SECURITY_MASTER_KEY to the masterkey.
       The LOG_DIR folder is not created automatically, except for /var/log/schema-registry
+      Two very important settings are the LOG_DIR and SCHEMA_REGISTRY_LOG4J_OPTS, which sets the logging folder
+      and the log4j.properties path, respectively. They should be set alongside filepath-lg4j-properties.
     default: |
        SCHEMA_REGISTRY_HEAP_OPTS: "-Xms1g -Xmx1g -XX:MetaspaceSize=96m -XX:+UseG1GC -XX:MaxGCPauseMillis=20 -XX:InitiatingHeapOccupancyPercent=35 -XX:G1HeapRegionSize=16M -XX:MinMetaspaceFreeRatio=50 -XX:MaxMetaspaceFreeRatio=80"
        SCHEMA_REGISTRY_LOG4J_OPTS: "-Dlog4j.configuration=file:/etc/schema-registry/log4j.properties"

@@ -36,3 +36,7 @@ resources:
     filename: archive.tar.gz                                
     description: |                                          
       Tarball file used to install kafka instead of packages
+  schema-registry:
+    type: file
+    filename: schema_registry.snap
+    description: schema registry snap

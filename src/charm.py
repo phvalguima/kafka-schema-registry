@@ -171,6 +171,11 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
             endpoints=[],
             nrpe_relation_name='nrpe-external-master')
 
+    @property
+    def snap(self):
+        """Returns the snap name if apache_snap is specified."""
+        return "schema-registry"
+
     def _on_lb_provider_available(self, event):
         if not (self.unit.is_leader() and self.lb_provider.is_available):
             return
@@ -340,6 +345,10 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
         # self._install_tarball()
         if self.distro == "confluent":
             packages = self.CONFLUENT_PACKAGES
+        elif self.distro == "apache_snap":
+            # Override prometheus jar file
+            self.JMX_EXPORTER_JAR_FOLDER = \
+                "/snap/schema-registry/current/jar/"
         else:
             raise Exception("Not Implemented Yet")
         super().install_packages('openjdk-11-headless', packages)
@@ -431,6 +440,8 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
     def _get_service_name(self):
         if self.distro == 'confluent':
             self.service = 'confluent-schema-registry'
+        elif self.distro == "apache_snap":
+            self.service = "snap.schema-registry.schema-registry"
         elif self.distro == "apache":
             self.service = "schema-registry"
         return self.service
@@ -637,8 +648,9 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
 
         # 5) Render configs
         logger.debug("Options are: {}".format(",".join(sr_props)))
+        target = self.config["filepath-schema-registry-properties"]
         render(source="schema-registry.properties.j2",
-               target="/etc/schema-registry/schema-registry.properties",
+               target=target,
                owner=self.config.get('user'),
                group=self.config.get("group"),
                perms=0o640,
@@ -652,13 +664,21 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
             "INFO, stdout, file"
         self.model.unit.status = MaintenanceStatus("Rendering log4j...")
         logger.debug("Rendering log4j")
+        if self.distro == "apache_snap":
+            kafka_logger_path = \
+                "/var/snap/schema-registry/common/schema-registry.log"
+        else:
+            kafka_logger_path = \
+                "/var/log/schema-registry/schema-registry.log"
+        target = self.config["filepath-log4j-properties"]
         render(source="schema-registry_log4j.properties.j2",
-               target="/etc/schema-registry/log4j.properties",
+               target=target,
                owner=self.config.get('user'),
                group=self.config.get("group"),
                perms=0o640,
                context={
-                   "root_logger": root_logger
+                   "root_logger": root_logger,
+                   "sr_log_file": kafka_logger_path,
                })
         return root_logger
 
@@ -736,9 +756,17 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
         self.model.unit.status = \
             MaintenanceStatus("Render service override conf file")
         logger.debug("Render override.conf")
-        ctx["svc_override"] = self.render_service_override_file(
-            target="/etc/systemd/system/"
-                   "{}.service.d/override.conf".format(self.service))
+        if self.distro == "apache_snap":
+            ctx["svc_opts"] = self.render_service_override_file(
+                target="/etc/systemd/system/"
+                       "{}.service.d/override.conf".format(self.service),
+                jmx_jar_folder="/snap/schema-registry/current/jar/",
+                jmx_file_name="/var/snap/schema-registry"
+                              "/common/prometheus.yaml")
+        else:
+            ctx["svc_opts"] = self.render_service_override_file(
+                target="/etc/systemd/system/"
+                       "{}.service.d/override.conf".format(self.service))
         if self._check_if_ready_to_start():
             logger.info("Service ready or start, restarting it...")
             # Unmask and enable service
@@ -749,6 +777,7 @@ class KafkaSchemaRegistryCharm(KafkaJavaCharmBase):
             logger.debug("finished restarting")
             self.model.unit.status = \
                 ActiveStatus("Service is running")
+
         if not service_running(self.service):
             logger.warning("Service not running that "
                            "should be: {}".format(self.service))
